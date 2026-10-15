@@ -1,6 +1,8 @@
 {# Home screen (plan features):
    - program name + short description
-   - URL input with a "Paste" button (visible only if clipboard permission granted)
+   - URL input with a "Paste" button next to it, enabled only when the page
+     is allowed to read the clipboard (permission granted / secure context);
+     disabled when permission is denied or the API is unavailable
    - Verify button: 60% transparent until a link has been entered #}
 {% extends "base.html" %}
 {% block title %}Anti X-Fakes — Verify an X post{% endblock %}
@@ -21,8 +23,9 @@
         <div class="input-group mb-3">
           <input type="text" name="url" id="postUrl" class="form-control form-control-dark"
                  placeholder="https://x.com/user/status/1234567890" autocomplete="off" required>
-          {# Hidden by default; JS reveals it only when clipboard-read is granted #}
-          <button class="btn btn-blue" type="button" id="pasteBtn" title="Paste from clipboard" hidden>Paste</button>
+          {# Disabled by default; JS enables it only when reading the clipboard is allowed #}
+          <button class="btn btn-blue" type="button" id="pasteBtn"
+                  title="Paste from clipboard" disabled>Paste</button>
         </div>
         <div class="d-grid">
           <button type="submit" id="verifyBtn" class="btn btn-mint btn-lg">Verify</button>
@@ -45,20 +48,38 @@
   input.addEventListener('input', refreshOpacity);
   refreshOpacity();
 
-  // Paste button: shown only if the page has clipboard-read permission.
+  // Paste button: enabled only when the page is allowed to read the clipboard.
+  // It stays disabled if the Clipboard API is missing (unsupported browser /
+  // non-HTTPS context) or if the clipboard-read permission is denied.
   const pasteBtn = document.getElementById('pasteBtn');
-  if (navigator.clipboard && navigator.clipboard.readText) {
-    navigator.permissions.query({ name: 'clipboard-read' }).then(permission => {
-      pasteBtn.hidden = permission.state !== 'granted';
-      permission.onchange = () => { pasteBtn.hidden = permission.state !== 'granted'; };
-    }).catch(() => {});  // permission API unsupported -> button stays hidden
+  const canPaste = !!(navigator.clipboard && navigator.clipboard.readText);
+  if (canPaste) {
+    // The Permissions API may not know 'clipboard-read' (e.g. Firefox/Safari);
+    // in that case assume reading is possible on click and keep it enabled.
+    let probe;
+    try {
+      probe = navigator.permissions.query({ name: 'clipboard-read' });
+    } catch (e) {
+      pasteBtn.disabled = false;  // permission query unsupported -> best effort
+    }
+    if (probe) {
+      probe.then(permission => {
+        const apply = () => { pasteBtn.disabled = permission.state !== 'granted'; };
+        apply();
+        permission.onchange = apply;  // react live if the user changes permission
+      }).catch(() => { pasteBtn.disabled = false; });
+    }
   }
   pasteBtn.addEventListener('click', async () => {
+    if (pasteBtn.disabled) return;  // defensive guard, should not be reachable
     try {
       input.value = (await navigator.clipboard.readText()).trim();
       refreshOpacity();
       input.focus();
-    } catch (e) { /* read denied at click time: nothing to do */ }
+    } catch (e) {
+      // Read denied at click time: disable the button so it cannot be spammed.
+      pasteBtn.disabled = true;
+    }
   });
 </script>
 {% endblock %}
