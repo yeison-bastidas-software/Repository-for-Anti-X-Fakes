@@ -1,0 +1,14 @@
+{# Minimal error page: shown when a verification failed or no result exists. #}
+{% extends "base.html" %}
+{% block title %}Anti X-Fakes — Error{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-6">
+    <div class="card card-dark p-5 mt-5 text-center">
+      <h2 class="h4 verdict-false mb-3">Error</h2>
+      <p>{{ message }}</p>
+      <a href="{{ url_for('home') }}" class="btn btn-mint mt-2">Back to home</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

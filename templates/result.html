@@ -1,0 +1,83 @@
+{# Results screen (plan features):
+   - square rounded card with the summarized conclusion and, at the bottom,
+     the verdict in ALL CAPS, green for "true-ish", red for "false-ish"
+   - above the conclusion: research time + all sources used
+   - button back to home + button to download the extended PDF report
+   Note: OPINION has no verifiable claims to contradict, so it is shown in
+   green (not a false verdict); UNVERIFIABLE gets the neutral mint color. #}
+{% extends "base.html" %}
+{% block title %}Anti X-Fakes — Verdict{% endblock %}
+
+{% set v = data.verdict %}
+{% set vclass = 'verdict-true' if v in ('TRUE', 'OPINION')
+              else ('verdict-false' if v in ('FALSE', 'MISLEADING') else 'verdict-other') %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-8">
+
+    {# Above the conclusion: time spent on the research + source count #}
+    <div class="d-flex justify-content-between align-items-center mb-2" style="color:var(--muted)">
+      <span>⏱ Research time: {{ data.elapsed_seconds }} s</span>
+      <span>{{ data.sources | length }} source(s) consulted</span>
+    </div>
+
+    {# Rounded card: summarized conclusion + verdict badge at its bottom #}
+    <div class="card card-dark p-4 p-md-5 mb-4 text-center result-card">
+      <h2 class="h5 mb-3" style="color:var(--mint)">Conclusion of the investigation</h2>
+      <p class="mb-2"><em>“{{ data.post.text }}”</em></p>
+      <small style="color:var(--muted)">
+        — {{ data.post.author }}@{{ data.post.handle }}{% if data.post.date %} · {{ data.post.date }}{% endif %}
+      </small>
+      <hr style="border-color:var(--panel-2)">
+      <p class="text-start">{{ data.reasoning }}</p>
+      <p class="text-start" style="color:var(--muted)">Confidence: <strong>{{ data.confidence }}%</strong></p>
+      <div class="mt-auto pt-3">
+        <span class="verdict-badge {{ vclass }}">{{ v }}</span>
+      </div>
+    </div>
+
+    {# Per-claim breakdown — each claim cites the sources used for it (rule 4) #}
+    {% if data.claims %}
+    <div class="card card-dark p-4 mb-4">
+      <h3 class="h6 mb-3" style="color:var(--mint)">Claims analyzed</h3>
+      {% for c in data.claims %}
+        <div class="claim-item">
+          <strong>{{ c.claim }}</strong>
+          <span class="ms-2 badge
+            {% if c.label == 'TRUE' %}bg-true{% elif c.label in ('FALSE', 'MISLEADING') %}bg-false{% else %}bg-accent{% endif %}">
+            {{ c.label }} · {{ c.confidence }}%
+          </span>
+          <p class="mb-1 mt-1" style="color:var(--muted)">{{ c.reasoning }}</p>
+          {% for s in c.sources %}
+            <div class="src-line">↳ <a href="{{ s }}" target="_blank" rel="noopener">{{ s }}</a></div>
+          {% endfor %}
+        </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {# Every external source consulted during the research #}
+    <div class="card card-dark p-4 mb-4">
+      <h3 class="h6 mb-2" style="color:var(--mint)">Sources used</h3>
+      {% if data.sources %}
+        {% for s in data.sources %}
+        <div class="source-item">
+          <span class="badge btn-blue me-2">{{ s.api }}</span>
+          <a href="{{ s.url }}" target="_blank" rel="noopener">{{ s.title or s.url }}</a>
+          {% if s.snippet %}<div style="color:var(--muted)">{{ s.snippet|truncate(160) }}</div>{% endif %}
+        </div>
+        {% endfor %}
+      {% else %}
+        <p style="color:var(--muted)">No external evidence was found for this post.</p>
+      {% endif %}
+    </div>
+
+    {# Actions: start over, or download the deeper PDF analysis #}
+    <div class="d-flex gap-2 mb-4">
+      <a href="{{ url_for('home') }}" class="btn btn-blue flex-grow-1">← Verify another post</a>
+      <a href="{{ url_for('pdf', post_id=post_id) }}" class="btn btn-mint flex-grow-1">Download PDF</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

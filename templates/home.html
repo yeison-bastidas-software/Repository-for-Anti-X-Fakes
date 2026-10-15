@@ -1,0 +1,64 @@
+{# Home screen (plan features):
+   - program name + short description
+   - URL input with a "Paste" button (visible only if clipboard permission granted)
+   - Verify button: 60% transparent until a link has been entered #}
+{% extends "base.html" %}
+{% block title %}Anti X-Fakes — Verify an X post{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-7">
+    <div class="card card-dark p-4 p-md-5 mt-4">
+      <h1 class="h3 fw-bold mb-2" style="color:var(--mint)">Anti X-Fakes</h1>
+      <p class="mb-4" style="color:var(--muted)">
+        Paste a link to any X post and Anti X-Fakes will extract its verifiable
+        claims, cross-check them against published fact-checks, global news and
+        Wikipedia, and return an evidence-grounded verdict with cited sources.
+      </p>
+
+      {# Submitting here runs the full verification pipeline (POST /check). #}
+      <form method="POST" action="{{ url_for('check') }}" id="checkForm">
+        <div class="input-group mb-3">
+          <input type="text" name="url" id="postUrl" class="form-control form-control-dark"
+                 placeholder="https://x.com/user/status/1234567890" autocomplete="off" required>
+          {# Hidden by default; JS reveals it only when clipboard-read is granted #}
+          <button class="btn btn-blue" type="button" id="pasteBtn" title="Paste from clipboard" hidden>Paste</button>
+        </div>
+        <div class="d-grid">
+          <button type="submit" id="verifyBtn" class="btn btn-mint btn-lg">Verify</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Verify button opacity: starts at 60% transparent, becomes fully opaque
+  // as soon as the user has typed/pasted a link into the field.
+  const input = document.getElementById('postUrl');
+  const verifyBtn = document.getElementById('verifyBtn');
+  function refreshOpacity() {
+    verifyBtn.classList.toggle('ready', input.value.trim().length > 0);
+  }
+  input.addEventListener('input', refreshOpacity);
+  refreshOpacity();
+
+  // Paste button: shown only if the page has clipboard-read permission.
+  const pasteBtn = document.getElementById('pasteBtn');
+  if (navigator.clipboard && navigator.clipboard.readText) {
+    navigator.permissions.query({ name: 'clipboard-read' }).then(permission => {
+      pasteBtn.hidden = permission.state !== 'granted';
+      permission.onchange = () => { pasteBtn.hidden = permission.state !== 'granted'; };
+    }).catch(() => {});  // permission API unsupported -> button stays hidden
+  }
+  pasteBtn.addEventListener('click', async () => {
+    try {
+      input.value = (await navigator.clipboard.readText()).trim();
+      refreshOpacity();
+      input.focus();
+    } catch (e) { /* read denied at click time: nothing to do */ }
+  });
+</script>
+{% endblock %}

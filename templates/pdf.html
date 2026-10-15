@@ -1,0 +1,68 @@
+{# PDF report template — standalone (does NOT extend base.html): WeasyPrint
+   renders this HTML+CSS directly into an A4 document, so it must not depend
+   on Bootstrap or the dark screen theme. Print-friendly light styling only. #}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Anti X-Fakes Report</title>
+  <style>
+    @page { size: A4; margin: 22mm 18mm; }
+    body { font-family: "DejaVu Sans", Arial, sans-serif; color: #23272b; font-size: 11pt; line-height: 1.5; }
+    h1 { color: #1f3a5f; font-size: 20pt; border-bottom: 3px solid #7fe3d1; padding-bottom: 6px; }
+    h2 { color: #1f3a5f; font-size: 14pt; margin-top: 22px; }
+    .meta { color: #6b7780; font-size: 9pt; }
+    .verdict { font-size: 22pt; font-weight: bold; text-transform: uppercase; letter-spacing: 2px; }
+    .true { color: #2ecc71; } .false { color: #e74c3c; } .other { color: #1f3a5f; }
+    blockquote { background: #f2f5f4; border-left: 4px solid #7fe3d1; margin: 12px 0; padding: 10px 14px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 10pt; }
+    th, td { border: 1px solid #ccd4d2; padding: 6px 8px; text-align: left; vertical-align: top; }
+    th { background: #eef2f1; }
+    ul.sources li { margin-bottom: 4px; word-break: break-all; font-size: 9.5pt; }
+    .disclaimer { margin-top: 26px; padding: 8px; border: 1px dashed #9aa7b0; color: #6b7780; font-size: 9pt; text-align: center; }
+    p.extended { white-space: pre-wrap; }  {# keep the LLM's section breaks intact #}
+  </style>
+</head>
+<body>
+  <h1>Anti X-Fakes — Extended Fact-Checking Report</h1>
+  <p class="meta">Generated: {{ generated_at }} · Post ID: {{ data._post_id }} · Research time: {{ data.elapsed_seconds }} s</p>
+
+  <h2>Original post</h2>
+  <blockquote>{{ data.post.text }}<br>
+    <span class="meta">— {{ data.post.author }} (@{{ data.post.handle }}){% if data.post.date %} · {{ data.post.date }}{% endif %}</span>
+  </blockquote>
+
+  <h2>Verdict</h2>
+  {# Same green/red logic as the results screen, adapted for print colors #}
+  <p class="verdict {% if data.verdict in ('TRUE', 'OPINION') %}true{% elif data.verdict in ('FALSE', 'MISLEADING') %}false{% else %}other{% endif %}">{{ data.verdict }}</p>
+  <p>Confidence: {{ data.confidence }}%</p>
+  <p>{{ data.reasoning }}</p>
+
+  <h2>Claims analyzed</h2>
+  {% if data.claims %}
+  <table>
+    <tr><th>Claim</th><th>Label</th><th>Conf.</th><th>Reasoning</th></tr>
+    {% for c in data.claims %}
+    <tr><td>{{ c.claim }}</td><td>{{ c.label }}</td><td>{{ c.confidence }}%</td><td>{{ c.reasoning }}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p>No verifiable claims were found (opinion post).</p>
+  {% endif %}
+
+  <h2>Extended analysis</h2>
+  {# Gemini-generated deeper write-up requested at download time (step 9) #}
+  <p class="extended">{{ extended }}</p>
+
+  <h2>Sources cited</h2>
+  {% if data.sources %}
+  <ul class="sources">
+    {% for s in data.sources %}<li>[{{ s.api }}] {{ s.title }} — {{ s.url }}</li>{% endfor %}
+  </ul>
+  {% else %}
+  <p>No external sources were retrieved.</p>
+  {% endif %}
+
+  <p class="disclaimer">AI-assisted verdict, not absolute truth.</p>
+</body>
+</html>
