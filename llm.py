@@ -16,7 +16,7 @@ import re
 
 from google import genai
 
-_MODEL_NAME = "gemini-2.0-flash"  # Gemini free-tier model
+_MODEL_NAME = "gemini-3.8-flash"  # Gemini free-tier model (gemini-2.0-flash was retired by Google: the API returns 404 NOT_FOUND for it)
 _client = None                   # lazily created singleton (one client per app)
 
 
