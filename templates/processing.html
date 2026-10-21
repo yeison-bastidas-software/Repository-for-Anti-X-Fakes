@@ -1,4 +1,6 @@
-{# Processing screen: progress bar 0-100% driven by REAL backend stage status #}
+{# Processing screen: real progress bar fed by periodic polls to
+   /progress; on completion it redirects to the result or back home
+   if an error occurred. #}
 {% extends "base.html" %}
 {% block title %}Anti X-Fakes — Investigating…{% endblock %}
 
@@ -20,6 +22,7 @@
 
 {% block scripts %}
 <script>
+  // Polls the backend job status until the pipeline finishes (success or error).
   const token = {{ token | tojson }};
   const bar = document.getElementById('bar');
   const statusEl = document.getElementById('status');

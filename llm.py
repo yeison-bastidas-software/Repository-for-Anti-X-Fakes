@@ -1,15 +1,16 @@
-"""Anti X-Fakes — Gemini LLM stage."""
 import json
 import os
 import re
 import time
 from google import genai
 
+# Custom error raised when the daily Gemini quota is exhausted
 class QuotaExceededError(RuntimeError): pass
 
+# Lazy Gemini client (created once and reused)
 _MODEL_NAME = "gemini-3.8-flash"
 _client = None
-MAX_CLAIMS = 3  # Optimized: 3 claims is the sweet spot for accuracy vs token cost.
+MAX_CLAIMS = 3
 
 def _get_client():
     global _client
@@ -19,6 +20,8 @@ def _get_client():
         _client = genai.Client(api_key=key)
     return _client
 
+# LLM calls with a retry policy: 429s propagate as quota errors and
+# transient failures (503) are retried with exponential backoff
 def _call_with_retry(fn, max_retries=3):
     for attempt in range(max_retries):
         try: return fn()
@@ -31,6 +34,7 @@ def _call_with_retry(fn, max_retries=3):
                 time.sleep(2 * (2 ** attempt))
             else: raise
 
+# Base utilities: send a prompt and extract the JSON embedded in the reply
 def _ask(prompt):
     def call(): return _get_client().models.generate_content(model=_MODEL_NAME, contents=prompt)
     return (_call_with_retry(call).text or "").strip()
@@ -40,6 +44,7 @@ def _parse_json(text):
     if not match: raise ValueError("no JSON in LLM response")
     return json.loads(match.group(0))
 
+# Extract up to 3 atomic verifiable claims from the post (ignores opinions)
 def extract_claims(post_text):
     prompt = (
         "You are a fact-checking analyst. Extract up to 3 ATOMIC VERIFIABLE CLAIMS from the post below. "
@@ -49,8 +54,8 @@ def extract_claims(post_text):
     data = _parse_json(_ask(prompt))
     return [str(c).strip() for c in data.get("claims", []) if str(c).strip()][:MAX_CLAIMS]
 
+# Translate all claims to English in a single call to improve search coverage
 def batch_translate_claims(claims):
-    """Translate a list of claims to English in a single API call."""
     if not claims:
         return []
     claims_text = "\n".join(f"{i+1}. {c}" for i, c in enumerate(claims, 1))
@@ -64,8 +69,9 @@ def batch_translate_claims(claims):
     translations = [str(t).strip() for t in data if str(t).strip()]
     return translations[:len(claims)]
 
+# Judge all claims against their evidence in a single call, normalizing
+# out-of-range labels and confidence values
 def judge_all_claims(claims, all_evidence):
-    """Judges ALL claims in a SINGLE API call to maximize efficiency."""
     evidence_blocks = []
     for i, (claim, evidence) in enumerate(zip(claims, all_evidence), 1):
         ev_text = "\n".join(f"  [{j}] ({e['api']}) {e['title']} | {e['snippet']} | {e['url']}" for j, e in enumerate(evidence, 1)) or "  (no external evidence found)"
@@ -77,7 +83,7 @@ def judge_all_claims(claims, all_evidence):
         "Return ONLY a valid JSON array of objects with this exact shape:\n"
         '[{"claim": "...", "label": "TRUE|FALSE|MISLEADING|UNVERIFIABLE", "confidence": 0-100, "reasoning": "...", "sources": ["url1"]}]'
     )
-    
+
     data = _parse_json(_ask(prompt))
     results = []
     for i, item in enumerate(data):
@@ -85,7 +91,7 @@ def judge_all_claims(claims, all_evidence):
         if label not in ("TRUE", "FALSE", "MISLEADING", "UNVERIFIABLE"): label = "UNVERIFIABLE"
         try: confidence = max(0, min(100, int(float(item.get("confidence", 0)))))
         except: confidence = 0
-        
+
         results.append({
             "claim": claims[i] if i < len(claims) else "Unknown",
             "label": label,
@@ -96,27 +102,29 @@ def judge_all_claims(claims, all_evidence):
         })
     return results
 
+# Overall verdict: unanimous label wins; mixed labels become MISLEADING
 def aggregate_verdict(claim_results):
     labels = [r.get("label", "UNVERIFIABLE") for r in claim_results]
     if not labels:
         return "UNVERIFIABLE"
-    
+
     true_count = labels.count("TRUE")
     false_count = labels.count("FALSE")
     unverifiable_count = labels.count("UNVERIFIABLE")
     total = len(labels)
-    
+
     if true_count == total:
         return "TRUE"
-    
+
     if false_count == total:
         return "FALSE"
-    
+
     if unverifiable_count == total:
         return "UNVERIFIABLE"
-    
+
     return "MISLEADING"
 
+# Writes the extended prose analysis (4 fixed sections) used by the PDF report
 def extended_analysis(post, claim_results, verdict):
     summary = "\n".join(f"- Claim: {r['claim']}\n  Verdict: {r['label']} ({r['confidence']}%)\n  Reasoning: {r['reasoning']}" for r in claim_results) or "- (opinion post)"
     prompt = (

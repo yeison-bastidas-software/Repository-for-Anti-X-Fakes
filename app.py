@@ -1,4 +1,3 @@
-"""Anti X-Fakes — Flask application entry point (In-Memory, No DB)."""
 import os
 import threading
 import time
@@ -13,11 +12,13 @@ import core
 import llm
 from llm import QuotaExceededError
 
+# Flask app and in-memory global job store (no database)
 app = Flask(__name__)
 app.secret_key = "anti-x-fakes"
 JOBS = {}
 _JOBS_LOCK = threading.Lock()
 
+# Thread-safe accessors for the shared job dictionary
 def _new_job(token):
     with _JOBS_LOCK:
         JOBS[token] = {"stage": 0, "total": 4, "status": "Starting investigation…", "done": False, "error": None, "post_id": None, "started_at": time.time()}
@@ -30,6 +31,7 @@ def _get_job(token):
     with _JOBS_LOCK:
         return dict(JOBS.get(token, {}))
 
+# Maps raw technical errors into clear, user-facing messages
 FRIENDLY_ERRORS = {
     "429": "Gemini's daily quota is exhausted. Please try again tomorrow (resets at midnight PT).",
     "RESOURCE_EXHAUSTED": "Gemini's daily quota is exhausted. Please try again tomorrow.",
@@ -46,6 +48,9 @@ def _friendly_error(raw_error):
             return friendly
     return f"Something went wrong: {msg}"
 
+# Main pipeline: runs in a background thread and reports progress by stage
+# (validate URL -> fetch post -> extract claims -> translate -> gather
+# evidence -> judge -> aggregate verdict)
 def run_pipeline(token, post_url):
     try:
         _update_job(token, stage=1, status="Validating URL and locating the post…")
@@ -62,7 +67,8 @@ def run_pipeline(token, post_url):
 
         _update_job(token, stage=3, status="Extracting verifiable claims with the LLM…")
         claims = llm.extract_claims(post["text"]) or []
-        
+
+        # Post without verifiable facts: labeled OPINION, no further search
         if not claims:
             payload = {"verdict": "OPINION", "confidence": 100, "reasoning": "No verifiable factual claims found.", "sources": [], "claims": [], "post": post, "elapsed_seconds": round(time.time() - _get_job(token)["started_at"], 1)}
             with _JOBS_LOCK: JOBS[token].update({"done": True, "post_id": post_id, "payload": payload})
@@ -85,7 +91,7 @@ def run_pipeline(token, post_url):
         ]
 
         _update_job(token, stage=6, status="Judging claims against retrieved evidence…")
-        
+
         try:
             results = llm.judge_all_claims(claims, all_evidence)
         except QuotaExceededError:
@@ -96,10 +102,12 @@ def run_pipeline(token, post_url):
             _update_job(token, done=True, error=f"LLM judging failed: {exc}")
             return
 
+        # Final consolidation: overall verdict, average confidence, combined
+        # reasoning and deduplicated sources
         verdict = llm.aggregate_verdict(results)
         confidence = round(sum(r["confidence"] for r in results) / len(results))
         reasoning = " ".join(f"{r['claim']} → {r['reasoning']}" for r in results)
-        
+
         sources, seen = [], set()
         for r in results:
             for e in r.get("evidence", []):
@@ -112,7 +120,7 @@ def run_pipeline(token, post_url):
             "sources": sources, "claims": results, "post": post,
             "elapsed_seconds": round(time.time() - _get_job(token)["started_at"], 1)
         }
-        
+
         with _JOBS_LOCK:
             JOBS[token].update({"done": True, "post_id": post_id, "payload": payload})
 
@@ -122,6 +130,7 @@ def run_pipeline(token, post_url):
         traceback.print_exc()
         _update_job(token, done=True, error=f"Verification failed: {exc}")
 
+# Web routes: initial form, processing screen, progress polling and result page
 @app.route("/")
 def home(): return render_template("home.html")
 
@@ -152,6 +161,9 @@ def result():
     if not payload: return render_template("error.html", message="No result available yet.")
     return render_template("result.html", data=payload, post_id=job.get("post_id", ""))
 
+# PDF report: generates an extended LLM analysis, parses the 4 expected
+# sections from the text, renders the pdf.html template and converts it
+# with WeasyPrint
 @app.route("/pdf/<post_id>")
 def pdf(post_id):
     job = next((j for j in JOBS.values() if j.get("post_id") == post_id and j.get("done")), None)
@@ -182,15 +194,15 @@ def pdf(post_id):
         line_stripped = line.strip()
         if not line_stripped:
             continue
-            
+
         line_lower = line_stripped.lower()
         matched_key = None
-        
+
         for keyword, canonical_key in key_map.items():
             if keyword in line_lower and len(line_stripped) < 80:
                 matched_key = canonical_key
                 break
-                
+
         if matched_key:
             current_section = matched_key
             if ":" in line_stripped:
@@ -216,6 +228,7 @@ def pdf(post_id):
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     )
 
+    # Output filename derived from the post (author + first words + id)
     post_text = payload["post"]["text"]
     handle = payload["post"]["handle"]
 
