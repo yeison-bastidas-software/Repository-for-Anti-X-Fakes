@@ -2,6 +2,19 @@
 
 Web application for automated fact-checking of posts on X (Twitter). The user pastes a link to any public post and the system extracts its verifiable claims, cross-references them against published fact-checks and global news sources using retrieval-augmented generation (RAG), and returns an evidence-grounded verdict (TRUE, FALSE, MISLEADING, UNVERIFIABLE or OPINION) with cited sources and a downloadable PDF report.
 
+## Table of Contents
+- [Purpose](#purpose)
+- [Features](#features)
+- [Technology Stack](#technology-stack)
+- [Architecture](#architecture)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Configuration](#configuration)
+- [Usage](#usage)
+- [Project Structure](#project-structure)
+- [Design Decisions and Limitations](#design-decisions-and-limitations)
+- [License](#license)
+
 ## Purpose
 
 Misinformation spreads quickly on social media, and manually verifying every claim is slow and requires access to specialized fact-checking tools. Anti X-Fakes automates that workflow end to end: from reading the post, to decomposing it into atomic factual claims, searching real external evidence, and producing an explainable verdict where every judgment is backed by the retrieved sources rather than by the language model alone.
