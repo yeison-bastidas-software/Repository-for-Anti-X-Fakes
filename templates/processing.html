@@ -1,7 +1,4 @@
-{# Processing screen (plan features):
-   - progress bar 0-100% driven by the REAL backend stage status (/progress)
-   - estimated-time countdown that decreases with processing progress
-   - text explaining the current actual stage of the process #}
+{# Processing screen: progress bar 0-100% driven by REAL backend stage status #}
 {% extends "base.html" %}
 {% block title %}Anti X-Fakes — Investigating…{% endblock %}
 
@@ -11,16 +8,11 @@
     <div class="card card-dark p-4 p-md-5 mt-5 text-center">
       <h2 class="h4 mb-4" style="color:var(--mint)">Investigating the post…</h2>
 
-      {# Progress bar: width/label updated from the polled percent value #}
-      <div class="progress mb-2" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+      <div class="progress mb-3" role="progressbar" aria-valuemin="0" aria-valuemax="100">
         <div id="bar" class="progress-bar" style="width:0%">0%</div>
       </div>
 
-      {# Countdown estimate, derived from the observed real progress rate #}
-      <p class="countdown mb-3">Estimated time remaining: <span id="eta">--</span></p>
-
-      {# Current-stage description coming straight from the backend job state #}
-      <p class="status-text" id="status">Starting investigation…</p>
+      <p class="status-text fs-5" id="status" style="color:var(--mint)">Starting investigation…</p>
     </div>
   </div>
 </div>
@@ -28,14 +20,10 @@
 
 {% block scripts %}
 <script>
-  const token = {{ token | tojson }};   // job id handed over by /check
+  const token = {{ token | tojson }};
   const bar = document.getElementById('bar');
-  const etaEl = document.getElementById('eta');
   const statusEl = document.getElementById('status');
 
-  let lastPct = 0, lastTs = Date.now(), estTotal = null;
-
-  // Poll the backend for the true stage status every ~800 ms.
   function tick() {
     fetch('/progress?token=' + encodeURIComponent(token))
       .then(response => response.json())
@@ -45,32 +33,19 @@
         bar.textContent = pct + '%';
         if (job.status) statusEl.textContent = job.status;
 
-        // ETA: learn the total duration from the observed progress speed,
-        // then count down the remaining share. Smoothed to avoid jumps.
-        const now = Date.now();
-        if (pct > lastPct) {
-          const gained = (pct - lastPct) / 100;
-          const candidate = ((now - lastTs) / 1000) / gained;
-          estTotal = estTotal ? estTotal * 0.6 + candidate * 0.4 : candidate;
-          lastPct = pct; lastTs = now;
-        }
-        if (job.done && !job.error) etaEl.textContent = '0s';
-        else if (estTotal) etaEl.textContent = (estTotal * (1 - pct / 100)).toFixed(0) + 's';
-
         if (job.done) {
           if (job.error) {
-            // Show the failure reason briefly, then return home to retry.
             statusEl.textContent = job.error;
-            statusEl.style.color = 'var(--false)';
-            setTimeout(() => { window.location.href = '/'; }, 4000);
+            statusEl.style.color = 'var(--false, #e74c3c)';
+            setTimeout(() => { window.location.href = '/'; }, 5000);
           } else {
             window.location.href = '/result?post_id=' + encodeURIComponent(job.post_id);
           }
-          return;  // stop polling once finished
+          return;
         }
         setTimeout(tick, 800);
       })
-      .catch(() => setTimeout(tick, 1500));  // transient network hiccup: retry later
+      .catch(() => setTimeout(tick, 1500));
   }
   tick();
 </script>

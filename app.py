@@ -1,249 +1,237 @@
-"""Anti X-Fakes — Flask application entry point.
-
-Serves the pages and routes defined in the project plan (and nothing else):
-  GET  /            homepage with the URL input form and the Verify button
-  POST /check       starts the RAG verification pipeline
-  GET  /processing  processing screen (progress bar, ETA countdown, stage text)
-  GET  /progress    JSON endpoint polled by the processing screen (real status)
-  GET  /result      verdict card page (reads the cached result from SQLite)
-  GET  /pdf/<id>    extended PDF report (Gemini + Jinja + WeasyPrint)
-
-The heavy work of /check runs in a background thread so the browser can poll
-/progress and show genuine per-stage progress instead of a fake animation.
-"""
-
+"""Anti X-Fakes — Flask application entry point (In-Memory, No DB)."""
 import os
 import threading
 import time
+import re
+import traceback
 from datetime import datetime, timezone
-
-# Load .env BEFORE importing modules that read environment variables.
 from dotenv import load_dotenv
 load_dotenv()
 
-from flask import (
-    Flask, render_template, request, redirect, url_for, session, Response, jsonify,
-)
-# Imported here (after load_dotenv) so both modules see the loaded keys.
-import core   # URL validation, SQLite cache, external API clients
-import llm    # Gemini: claim extraction, judging, extended PDF analysis
+from flask import Flask, render_template, request, redirect, url_for, session, Response, jsonify
+import core
+import llm
+from llm import QuotaExceededError
 
 app = Flask(__name__)
-# Local-only secret: the session just carries the id of the last job so the
-# result page knows which verification to display. No login system exists.
 app.secret_key = "anti-x-fakes"
-
-# ---------------------------------------------------------------------------
-# In-memory job registry: lets the Processing screen poll real progress.
-# Keyed by a short-lived random token generated when a check is submitted.
-# Value shape: {stage, total, status, done, error, post_id, started_at}
-# ---------------------------------------------------------------------------
 JOBS = {}
-_JOBS_LOCK = threading.Lock()  # the pipeline thread writes, requests read
-
+_JOBS_LOCK = threading.Lock()
 
 def _new_job(token):
-    """Create a fresh job record for a just-submitted verification."""
     with _JOBS_LOCK:
-        JOBS[token] = {
-            "stage": 0, "total": 5, "status": "Starting investigation…",
-            "done": False, "error": None, "post_id": None,
-            "started_at": time.time(),
-        }
-
+        JOBS[token] = {"stage": 0, "total": 4, "status": "Starting investigation…", "done": False, "error": None, "post_id": None, "started_at": time.time()}
 
 def _update_job(token, **changes):
-    """Patch fields of an existing job record (called from the worker thread)."""
     with _JOBS_LOCK:
-        job = JOBS.get(token)
-        if job:
-            job.update(changes)
-
+        if token in JOBS: JOBS[token].update(changes)
 
 def _get_job(token):
-    """Read a consistent snapshot of a job; empty dict if unknown/expired."""
     with _JOBS_LOCK:
-        job = JOBS.get(token)
-        return dict(job) if job else {}
+        return dict(JOBS.get(token, {}))
 
+FRIENDLY_ERRORS = {
+    "429": "Gemini's daily quota is exhausted. Please try again tomorrow (resets at midnight PT).",
+    "RESOURCE_EXHAUSTED": "Gemini's daily quota is exhausted. Please try again tomorrow.",
+    "Invalid URL": "That doesn't look like a valid X post link. Try something like: https://x.com/user/status/1234567890",
+    "Post not found": "We couldn't access that post. It may have been deleted or is private.",
+    "GEMINI_API_KEY": "The AI service is not configured. Contact the administrator.",
+    "CLAIMSEARCH_API_KEY": "Fact-checking service is not configured. Contact the administrator.",
+}
 
-# ---------------------------------------------------------------------------
-# Verification pipeline (internal flow steps 2-8 of the plan)
-# ---------------------------------------------------------------------------
+def _friendly_error(raw_error):
+    msg = str(raw_error)
+    for key, friendly in FRIENDLY_ERRORS.items():
+        if key in msg:
+            return friendly
+    return f"Something went wrong: {msg}"
 
 def run_pipeline(token, post_url):
-    """Execute one full verification and store the outcome in the SQLite cache.
-
-    Progress convention: stages 1-3 are fixed (validate, fetch, extract);
-    once the claim count N is known, each claim gets two sub-stages
-    (evidence search + judging), so total = 3 + 2*N, then save = total.
-    """
-    total = 5  # final stage number; recomputed below once claims are known
     try:
-        # Step 2: validate the URL and extract the numeric post id.
         _update_job(token, stage=1, status="Validating URL and locating the post…")
         post_id = core.extract_post_id(post_url)
         if not post_id:
-            _update_job(token, done=True, error=(
-                "Invalid URL. Paste a link to an X post "
-                "(e.g. https://x.com/user/status/1234567890)."
-            ))
+            _update_job(token, done=True, error="Invalid URL. Paste a valid X post link.")
             return
 
-        # Step 3: fetch content — FxTwitter first, one retry via X oEmbed.
-        _update_job(token, stage=2,
-                    status="Fetching post content (FxTwitter, fallback: oEmbed)…")
+        _update_job(token, stage=2, status="Fetching post content…")
         post = core.fetch_post(post_id, post_url)
         if not post:
-            _update_job(token, done=True, error="Post not found or unavailable")
+            _update_job(token, done=True, error="Post not found or unavailable.")
             return
 
-        # Step 4: split the post into atomic verifiable claims with Gemini.
         _update_job(token, stage=3, status="Extracting verifiable claims with the LLM…")
-        claims = llm.extract_claims(post["text"])
+        claims = llm.extract_claims(post["text"]) or []
+        
+        if not claims:
+            payload = {"verdict": "OPINION", "confidence": 100, "reasoning": "No verifiable factual claims found.", "sources": [], "claims": [], "post": post, "elapsed_seconds": round(time.time() - _get_job(token)["started_at"], 1)}
+            with _JOBS_LOCK: JOBS[token].update({"done": True, "post_id": post_id, "payload": payload})
+            return
 
-        if claims:
-            total = 3 + 2 * len(claims)
-            _update_job(token, total=total)
-            results = []
-            for i, claim in enumerate(claims, 1):
-                # Step 5: evidence search (ClaimSearch + GDELT + Wikipedia, top 3 each).
-                _update_job(token, stage=3 + 2 * (i - 1), status=(
-                    f"Searching evidence for claim {i}/{len(claims)}: “{claim[:60]}”"
-                ))
-                evidence = core.gather_evidence(claim)
+        _update_job(token, total=6, stage=4, status="Translating claims to English for better search coverage…")
+        try:
+            translated_claims = llm.batch_translate_claims(claims)
+        except QuotaExceededError:
+            _update_job(token, done=True, error="Gemini daily quota exhausted (429). Please try again tomorrow.")
+            return
+        except Exception as exc:
+            traceback.print_exc()
+            translated_claims = claims
 
-                # Step 6: Gemini judges the claim against its retrieved evidence.
-                _update_job(token, stage=3 + 2 * (i - 1) + 1, status=(
-                    f"Judging claim {i}/{len(claims)} against the retrieved evidence…"
-                ))
-                results.append(llm.judge_claim(claim, evidence))
+        _update_job(token, stage=5, status="Gathering evidence for all claims in parallel…")
+        all_evidence = [
+            core.gather_evidence(original, translated)
+            for original, translated in zip(claims, translated_claims)
+        ]
 
-            # Step 7: aggregate per-claim labels into one post-level verdict.
-            verdict = llm.aggregate_verdict(results)
-            confidence = round(sum(r["confidence"] for r in results) / len(results))
-            reasoning = " ".join(f"{r['claim']} → {r['reasoning']}" for r in results)
-        else:
-            # Opinion-only post: verdict OPINION, jump straight to saving (step 8).
-            verdict, confidence, results = "OPINION", 100, []
-            reasoning = ("The Gemini extractor found no verifiable factual claims "
-                         "in this post; it contains opinions only.")
+        _update_job(token, stage=6, status="Judging claims against retrieved evidence…")
+        
+        try:
+            results = llm.judge_all_claims(claims, all_evidence)
+        except QuotaExceededError:
+            _update_job(token, done=True, error="Gemini daily quota exhausted (429). Please try again tomorrow.")
+            return
+        except Exception as exc:
+            traceback.print_exc()
+            _update_job(token, done=True, error=f"LLM judging failed: {exc}")
+            return
 
-        # Every source cited anywhere is collected (deduplicated by URL) so the
-        # result page can credit all evidence used to form the verdict.
+        verdict = llm.aggregate_verdict(results)
+        confidence = round(sum(r["confidence"] for r in results) / len(results))
+        reasoning = " ".join(f"{r['claim']} → {r['reasoning']}" for r in results)
+        
         sources, seen = [], set()
         for r in results:
-            for e in r["evidence"]:
+            for e in r.get("evidence", []):
                 if e["url"] and e["url"] not in seen:
                     seen.add(e["url"])
                     sources.append(e)
 
-        elapsed = round(time.time() - _get_job(token)["started_at"], 1)
-
         payload = {
-            "verdict": verdict,
-            "confidence": confidence,
-            "reasoning": reasoning,
-            "sources": sources,
-            "claims": results,
-            "post": post,
-            "elapsed_seconds": elapsed,
+            "verdict": verdict, "confidence": confidence, "reasoning": reasoning,
+            "sources": sources, "claims": results, "post": post,
+            "elapsed_seconds": round(time.time() - _get_job(token)["started_at"], 1)
         }
-
-        # Step 8: persist to the SQLite cache keyed by post id, then finish.
-        _update_job(token, stage=total - 1, status="Saving verdict to cache and rendering result…")
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        core.save_result(post_id, post_url, now, payload)
-        _update_job(token, done=True, post_id=post_id)
+        
+        with _JOBS_LOCK:
+            JOBS[token].update({"done": True, "post_id": post_id, "payload": payload})
 
     except RuntimeError as exc:
-        # Missing/misconfigured API key (raised by the Gemini client).
-        _update_job(token, done=True, error=f"Configuration error: {exc}. Check your .env keys.")
-    except Exception as exc:  # any network/parse failure ends the job cleanly
+        _update_job(token, done=True, error=f"Configuration error: {exc}. Check .env keys.")
+    except Exception as exc:
+        traceback.print_exc()
         _update_job(token, done=True, error=f"Verification failed: {exc}")
 
-
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
-
 @app.route("/")
-def home():
-    """Homepage: program name, description, URL field, Paste and Verify buttons."""
-    return render_template("home.html")
-
+def home(): return render_template("home.html")
 
 @app.route("/check", methods=["POST"])
 def check():
-    """Receive the submitted URL and launch the pipeline in a worker thread."""
     post_url = (request.form.get("url") or "").strip()
-    token = os.urandom(8).hex()          # opaque id for this verification run
+    token = os.urandom(8).hex()
     _new_job(token)
-
     threading.Thread(target=run_pipeline, args=(token, post_url), daemon=True).start()
-
-    session["last_token"] = token        # remembered so /result can find the job
+    session["last_token"] = token
     return redirect(url_for("processing", token=token))
 
-
 @app.route("/processing")
-def processing():
-    """Processing screen: progress bar, ETA countdown, current-stage text."""
-    return render_template("processing.html", token=request.args.get("token", ""))
-
+def processing(): return render_template("processing.html", token=request.args.get("token", ""))
 
 @app.route("/progress")
 def progress():
-    """Polling endpoint: percent (0-100), stage text, done flag, error, post id."""
     job = _get_job(request.args.get("token", ""))
-    if not job:
-        return jsonify({"percent": 0, "status": "", "done": True,
-                        "error": "This verification is no longer active. Please start again.",
-                        "post_id": None})
-
+    if not job: return jsonify({"percent": 0, "status": "", "done": True, "error": "Session expired.", "post_id": None})
     stage, total = job["stage"], max(1, job["total"])
-    if job["done"] and not job["error"]:
-        percent = 100                     # success always lands on 100%
-    else:
-        percent = min(99, round(stage / total * 100))  # cap below 100 while running
-    return jsonify({"percent": percent, "status": job["status"],
-                    "done": job["done"], "error": job["error"], "post_id": job["post_id"]})
-
+    percent = 100 if (job["done"] and not job["error"]) else min(99, round(stage / total * 100))
+    return jsonify({"percent": percent, "status": job["status"], "done": job["done"], "error": job["error"], "post_id": job["post_id"]})
 
 @app.route("/result")
 def result():
-    """Verdict card: conclusion, confidence, reasoning, sources, research time."""
-    post_id = (_get_job(session.get("last_token", "")).get("post_id")
-               or request.args.get("post_id", ""))
-    data = core.load_result(post_id) if post_id else None
-    if not data:
-        return render_template("error.html",
-                               message="No result available yet. Please verify a post first.")
-    return render_template("result.html", data=data, post_id=post_id)
-
+    job = _get_job(session.get("last_token", ""))
+    payload = job.get("payload") if job else None
+    if not payload: return render_template("error.html", message="No result available yet.")
+    return render_template("result.html", data=payload, post_id=job.get("post_id", ""))
 
 @app.route("/pdf/<post_id>")
 def pdf(post_id):
-    """Extended PDF report: cached verdict + Gemini extended analysis + WeasyPrint."""
-    data = core.load_result(post_id)
-    if not data:
-        return render_template("error.html", message="Post not found or unavailable")
+    job = next((j for j in JOBS.values() if j.get("post_id") == post_id and j.get("done")), None)
+    if not job or not job.get("payload"):
+        return render_template("error.html", message="Post data expired from memory.")
 
-    # Ask Gemini for a deeper write-up, inject it into the print template,
-    # then convert the rendered HTML+CSS into a PDF returned as a download.
-    from weasyprint import HTML  # heavy import deferred: only needed here
-    extended = llm.extended_analysis(data["post"], data["claims"], data["verdict"])
+    from weasyprint import HTML
+    payload = job["payload"]
+
+    extended_raw = llm.extended_analysis(payload["post"], payload["claims"], payload["verdict"])
+
+    key_map = {
+        "deeper context": "1. Deeper context of the topic",
+        "context of the topic": "1. Deeper context of the topic",
+        "additional evidence": "2. Additional evidence discussion",
+        "evidence discussion": "2. Additional evidence discussion",
+        "related background": "3. Related background",
+        "background": "3. Related background",
+        "final nuanced": "4. Final nuanced conclusion",
+        "nuanced conclusion": "4. Final nuanced conclusion",
+        "final conclusion": "4. Final nuanced conclusion"
+    }
+
+    sections = {key: "" for key in key_map.values()}
+    current_section = None
+
+    for line in extended_raw.split("\n"):
+        line_stripped = line.strip()
+        if not line_stripped:
+            continue
+            
+        line_lower = line_stripped.lower()
+        matched_key = None
+        
+        for keyword, canonical_key in key_map.items():
+            if keyword in line_lower and len(line_stripped) < 80:
+                matched_key = canonical_key
+                break
+                
+        if matched_key:
+            current_section = matched_key
+            if ":" in line_stripped:
+                content = line_stripped.split(":", 1)[1].strip()
+                if len(content) > 10:
+                    sections[current_section] += content + " "
+        elif current_section:
+            sections[current_section] += line_stripped + " "
+
+    extended_html = ""
+    for section_key, content in sections.items():
+        title = section_key.split(". ", 1)[1] if ". " in section_key else section_key
+        if content.strip():
+            extended_html += f"<h3>{title}</h3><p>{content.strip()}</p>"
+        else:
+            extended_html = f"<p>{extended_raw}</p>"
+            break
+
     html = render_template(
-        "pdf.html", data=data, extended=extended,
-        generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-    )
-    pdf_bytes = HTML(string=html).write_pdf()
-    return Response(
-        pdf_bytes, mimetype="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="anti-x-fakes-{post_id}.pdf"'},
+        "pdf.html",
+        data=payload,
+        extended=extended_html,
+        generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     )
 
+    post_text = payload["post"]["text"]
+    handle = payload["post"]["handle"]
+
+    words = post_text.split()[:4]
+    snippet = " ".join(words)
+    snippet = re.sub(r'[^a-zA-Z0-9áéíóúñÁÉÍÓÚÑ\s]', '', snippet)
+    slug = "-".join(snippet.split()).lower()[:40]
+    handle_clean = re.sub(r'[^a-zA-Z0-9_]', '', handle).lower()
+
+    filename = f"anti-x-fakes_{slug}_{handle_clean}_{post_id}.pdf"
+
+    return Response(
+        HTML(string=html).write_pdf(),
+        mimetype="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
 
 if __name__ == "__main__":
-    # Local development server (the plan targets running on your own machine).
     app.run(debug=True, port=5000)

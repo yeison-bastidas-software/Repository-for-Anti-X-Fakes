@@ -1,172 +1,137 @@
-"""Anti X-Fakes — Gemini LLM stage.
-
-Gemini (free tier) is the ONLY LLM used, per the project plan. It powers:
-  1. extract_claims     — split post text into atomic verifiable claims.
-  2. judge_claim        — verdict per claim grounded in retrieved evidence.
-  3. aggregate_verdict  — combine claim labels into one post-level verdict.
-  4. extended_analysis  — deeper write-up injected into the PDF template.
-
-All prompts demand strict JSON back (except the PDF prose) and every reply is
-parsed defensively so a malformed LLM answer can never crash the pipeline.
-"""
-
+"""Anti X-Fakes — Gemini LLM stage."""
 import json
 import os
 import re
-
+import time
 from google import genai
 
-_MODEL_NAME = "gemini-2.0-flash"  # Gemini free-tier model
-_client = None                   # lazily created singleton (one client per app)
+class QuotaExceededError(RuntimeError): pass
 
+_MODEL_NAME = "gemini-3.8-flash"
+_client = None
+MAX_CLAIMS = 3  # Optimized: 3 claims is the sweet spot for accuracy vs token cost.
 
 def _get_client():
-    """Build the Gemini client once, reading GEMINI_API_KEY from .env."""
     global _client
     if _client is None:
         key = os.environ.get("GEMINI_API_KEY", "")
-        if not key:
-            raise RuntimeError("GEMINI_API_KEY is not set")
+        if not key: raise RuntimeError("GEMINI_API_KEY is not set")
         _client = genai.Client(api_key=key)
     return _client
 
+def _call_with_retry(fn, max_retries=3):
+    for attempt in range(max_retries):
+        try: return fn()
+        except Exception as exc:
+            msg = str(exc).upper()
+            if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+                raise QuotaExceededError(str(exc)) from exc
+            if attempt == max_retries - 1: raise
+            if "503" in msg or "UNAVAILABLE" in msg:
+                time.sleep(2 * (2 ** attempt))
+            else: raise
 
 def _ask(prompt):
-    """Send one prompt to Gemini and return the plain-text reply."""
-    response = _get_client().models.generate_content(
-        model=_MODEL_NAME, contents=prompt
-    )
-    return (response.text or "").strip()
-
+    def call(): return _get_client().models.generate_content(model=_MODEL_NAME, contents=prompt)
+    return (_call_with_retry(call).text or "").strip()
 
 def _parse_json(text):
-    """Extract the first JSON object/array embedded in an LLM reply.
-
-    Models sometimes wrap JSON in prose or code fences; the greedy regex
-    grabs everything between the outermost brackets and parses it.
-    """
     match = re.search(r"[\[{].*[\]}]", text, re.DOTALL)
-    if not match:
-        raise ValueError("no JSON in LLM response")
+    if not match: raise ValueError("no JSON in LLM response")
     return json.loads(match.group(0))
 
-
-# ---------------------------------------------------------------------------
-# Extract stage: split post text into atomic verifiable claims
-# ---------------------------------------------------------------------------
-
-MAX_CLAIMS = 8  # hard cap so a rambling post cannot explode the API budget
-
-
 def extract_claims(post_text):
-    """Return a list of atomic verifiable claim strings ([] if opinions only)."""
     prompt = (
-        "You are a fact-checking analyst. From the social media post below, "
-        "extract every ATOMIC VERIFIABLE CLAIM (a statement that can be "
-        "checked against real-world evidence). Ignore pure opinions, jokes or "
-        "calls to action.\n\n"
-        "Post:\n" + post_text + "\n\n"
-        'Reply with ONLY valid JSON: {"claims": ["claim 1", "claim 2"]} — '
-        "an empty list if the post contains no verifiable claims."
+        "You are a fact-checking analyst. Extract up to 3 ATOMIC VERIFIABLE CLAIMS from the post below. "
+        "Ignore opinions, jokes, or calls to action.\n\nPost:\n" + post_text + "\n\n"
+        'Reply with ONLY valid JSON: {"claims": ["claim 1", "claim 2"]}'
     )
     data = _parse_json(_ask(prompt))
-    claims = [str(c).strip() for c in data.get("claims", []) if str(c).strip()]
-    return claims[:MAX_CLAIMS]
+    return [str(c).strip() for c in data.get("claims", []) if str(c).strip()][:MAX_CLAIMS]
 
-
-# ---------------------------------------------------------------------------
-# Judge stage: one verdict per claim, grounded in retrieved evidence
-# ---------------------------------------------------------------------------
-
-CLAIM_LABELS = ("TRUE", "FALSE", "MISLEADING", "UNVERIFIABLE")  # per-claim set
-
-
-def judge_claim(claim, evidence):
-    """Ask Gemini to label one claim using ONLY the supplied evidence.
-
-    Returns {claim, label, confidence, reasoning, sources, evidence}.
-    Invalid labels fall back to UNVERIFIABLE; confidence is clamped to 0-100.
-    """
-    if evidence:
-        ev_block = "\n".join(
-            f"[{i}] ({e['api']}) {e['title']} | {e['snippet']} | {e['url']}"
-            for i, e in enumerate(evidence, 1)
-        )
-    else:
-        ev_block = "(no external evidence found)"
-
+def batch_translate_claims(claims):
+    """Translate a list of claims to English in a single API call."""
+    if not claims:
+        return []
+    claims_text = "\n".join(f"{i+1}. {c}" for i, c in enumerate(claims, 1))
     prompt = (
-        "You are a rigorous fact-checking judge. Judge the claim STRICTLY on "
-        "the evidence provided; do not invent sources.\n\n"
-        f"Claim: {claim}\n\nEvidence:\n{ev_block}\n\n"
-        "Return ONLY valid JSON with this exact shape:\n"
-        '{"label": "TRUE|FALSE|MISLEADING|UNVERIFIABLE", "confidence": 0-100, '
-        '"reasoning": "short reasoning", "sources": ["url1", "url2"]}\n\n'
-        "Rules: use UNVERIFIABLE when the evidence is insufficient to judge. "
-        "List in 'sources' only URLs from the evidence actually used."
+        "Translate the following claims from Spanish (or any language) to English. "
+        "Preserve the original meaning. Return ONLY a valid JSON array of strings.\n\n"
+        f"Claims:\n{claims_text}\n\n"
+        'Reply with ONLY: ["translation 1", "translation 2", ...]'
     )
     data = _parse_json(_ask(prompt))
+    translations = [str(t).strip() for t in data if str(t).strip()]
+    return translations[:len(claims)]
 
-    label = str(data.get("label", "")).upper()
-    if label not in CLAIM_LABELS:
-        label = "UNVERIFIABLE"
-    try:
-        confidence = max(0, min(100, int(float(data.get("confidence", 0)))))
-    except (TypeError, ValueError):
-        confidence = 0
+def judge_all_claims(claims, all_evidence):
+    """Judges ALL claims in a SINGLE API call to maximize efficiency."""
+    evidence_blocks = []
+    for i, (claim, evidence) in enumerate(zip(claims, all_evidence), 1):
+        ev_text = "\n".join(f"  [{j}] ({e['api']}) {e['title']} | {e['snippet']} | {e['url']}" for j, e in enumerate(evidence, 1)) or "  (no external evidence found)"
+        evidence_blocks.append(f"Claim {i}: {claim}\nEvidence:\n{ev_text}")
 
-    return {
-        "claim": claim,
-        "label": label,
-        "confidence": confidence,
-        "reasoning": str(data.get("reasoning", "")),
-        "sources": [str(s) for s in data.get("sources", [])],
-        "evidence": evidence,  # kept so the UI can cite every source used
-    }
-
+    prompt = (
+        "You are a rigorous fact-checking judge. Judge the following claims STRICTLY on the provided evidence.\n\n"
+        + "\n\n".join(evidence_blocks) + "\n\n"
+        "Return ONLY a valid JSON array of objects with this exact shape:\n"
+        '[{"claim": "...", "label": "TRUE|FALSE|MISLEADING|UNVERIFIABLE", "confidence": 0-100, "reasoning": "...", "sources": ["url1"]}]'
+    )
+    
+    data = _parse_json(_ask(prompt))
+    results = []
+    for i, item in enumerate(data):
+        label = str(item.get("label", "")).upper()
+        if label not in ("TRUE", "FALSE", "MISLEADING", "UNVERIFIABLE"): label = "UNVERIFIABLE"
+        try: confidence = max(0, min(100, int(float(item.get("confidence", 0)))))
+        except: confidence = 0
+        
+        results.append({
+            "claim": claims[i] if i < len(claims) else "Unknown",
+            "label": label,
+            "confidence": confidence,
+            "reasoning": str(item.get("reasoning", "")),
+            "sources": [str(s) for s in item.get("sources", [])],
+            "evidence": all_evidence[i] if i < len(all_evidence) else []
+        })
+    return results
 
 def aggregate_verdict(claim_results):
-    """Collapse per-claim labels into one post-level verdict.
-
-    Precedence fixed by the plan: any FALSE -> FALSE; else any MISLEADING ->
-    MISLEADING; else TRUE if something checked out; else UNVERIFIABLE.
-    """
-    labels = {r["label"] for r in claim_results}
-    if "FALSE" in labels:
-        return "FALSE"
-    if "MISLEADING" in labels:
-        return "MISLEADING"
-    if "TRUE" in labels:
+    labels = [r.get("label", "UNVERIFIABLE") for r in claim_results]
+    if not labels:
+        return "UNVERIFIABLE"
+    
+    true_count = labels.count("TRUE")
+    false_count = labels.count("FALSE")
+    unverifiable_count = labels.count("UNVERIFIABLE")
+    total = len(labels)
+    
+    if true_count == total:
         return "TRUE"
-    return "UNVERIFIABLE"
-
-
-# ---------------------------------------------------------------------------
-# PDF stage: extended analysis for the print template
-# ---------------------------------------------------------------------------
+    
+    if false_count == total:
+        return "FALSE"
+    
+    if unverifiable_count == total:
+        return "UNVERIFIABLE"
+    
+    return "MISLEADING"
 
 def extended_analysis(post, claim_results, verdict):
-    """Generate the deeper report text (context, evidence, background, conclusion).
-
-    Called only when the user clicks Download PDF; receives the cached findings
-    so the model expands on real evidence instead of guessing anew.
-    """
-    summary = "\n".join(
-        f"- Claim: {r['claim']}\n  Verdict: {r['label']} (confidence {r['confidence']}%)\n"
-        f"  Reasoning: {r['reasoning']}"
-        for r in claim_results
-    ) or "- (no verifiable claims: opinion post)"
-
+    summary = "\n".join(f"- Claim: {r['claim']}\n  Verdict: {r['label']} ({r['confidence']}%)\n  Reasoning: {r['reasoning']}" for r in claim_results) or "- (opinion post)"
     prompt = (
-        "You are writing an extended fact-checking report for a PDF document.\n\n"
         f"Original post by @{post['handle']} ({post['author']}):\n{post['text']}\n\n"
-        f"Per-claim findings:\n{summary}\n\n"
-        f"Overall verdict: {verdict}\n\n"
-        "Write an extended analysis in clear English prose with these sections:\n"
+        f"Per-claim findings:\n{summary}\n\nOverall verdict: {verdict}\n\n"
+        "Write an extended analysis in clear English prose with EXACTLY these 4 section titles, each on its own separate line:\n"
         "1. Deeper context of the topic\n"
         "2. Additional evidence discussion\n"
         "3. Related background\n"
-        "4. Final nuanced conclusion\n"
-        "Plain text only, no markdown symbols. 250-450 words total."
+        "4. Final nuanced conclusion\n\n"
+        "IMPORTANT RULES:\n"
+        "- Each section title MUST be on its own separate line (do not put content on the same line as the title).\n"
+        "- Every sentence MUST end with a period (.).\n"
+        "- Use proper punctuation and NORMAL spacing between words.\n"
+        "- Plain text ONLY. NO markdown symbols (no asterisks, no bold, no hashtags).\n"
+        "- Total length: 250-450 words."
     )
     return _ask(prompt)

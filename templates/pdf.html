@@ -1,68 +1,237 @@
-{# PDF report template — standalone (does NOT extend base.html): WeasyPrint
-   renders this HTML+CSS directly into an A4 document, so it must not depend
-   on Bootstrap or the dark screen theme. Print-friendly light styling only. #}
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Anti X-Fakes Report</title>
+  <title>Anti X-Fakes — Fact-Checking Report</title>
   <style>
-    @page { size: A4; margin: 22mm 18mm; }
-    body { font-family: "DejaVu Sans", Arial, sans-serif; color: #23272b; font-size: 11pt; line-height: 1.5; }
-    h1 { color: #1f3a5f; font-size: 20pt; border-bottom: 3px solid #7fe3d1; padding-bottom: 6px; }
-    h2 { color: #1f3a5f; font-size: 14pt; margin-top: 22px; }
-    .meta { color: #6b7780; font-size: 9pt; }
-    .verdict { font-size: 22pt; font-weight: bold; text-transform: uppercase; letter-spacing: 2px; }
-    .true { color: #2ecc71; } .false { color: #e74c3c; } .other { color: #1f3a5f; }
-    blockquote { background: #f2f5f4; border-left: 4px solid #7fe3d1; margin: 12px 0; padding: 10px 14px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 10pt; }
-    th, td { border: 1px solid #ccd4d2; padding: 6px 8px; text-align: left; vertical-align: top; }
-    th { background: #eef2f1; }
-    ul.sources li { margin-bottom: 4px; word-break: break-all; font-size: 9.5pt; }
-    .disclaimer { margin-top: 26px; padding: 8px; border: 1px dashed #9aa7b0; color: #6b7780; font-size: 9pt; text-align: center; }
-    p.extended { white-space: pre-wrap; }  {# keep the LLM's section breaks intact #}
+    @page {
+      size: letter;
+      margin: 2.54cm;
+      @top-center {
+        content: "Anti X-Fakes — Evidence-Grounded Report";
+        font-family: "Times New Roman", serif;
+        font-size: 10pt;
+        color: #666;
+      }
+      @bottom-center {
+        content: counter(page);
+        font-family: "Times New Roman", serif;
+        font-size: 10pt;
+      }
+    }
+
+    body {
+      font-family: "Times New Roman", Times, serif;
+      font-size: 12pt;
+      line-height: 2.0;
+      color: #000;
+      margin: 0;
+      padding: 0;
+    }
+
+    h1 {
+      font-size: 18pt;
+      font-weight: bold;
+      text-align: center;
+      margin-top: 0;
+      margin-bottom: 0.5in;
+      text-transform: uppercase;
+    }
+
+    h2 {
+      font-size: 12pt;
+      font-weight: bold;
+      text-align: center;
+      margin-top: 0.6in;
+      margin-bottom: 0.25in;
+      text-transform: uppercase;
+    }
+
+    h3 {
+      font-size: 12pt;
+      font-weight: bold;
+      margin-top: 0.3in;
+      margin-bottom: 0.1in;
+    }
+
+    p {
+      text-indent: 0.5in;
+      margin: 0 0 0 0;
+      text-align: left;
+      word-wrap: break-word;
+      hyphens: none;
+     letter-spacing: normal;
+      word-spacing: normal;
+    }
+
+    .no-indent {
+      text-indent: 0;
+    }
+
+    .meta {
+      text-align: center;
+      font-size: 12pt;
+      line-height: 2.0;
+      margin-bottom: 1in;
+    }
+
+    .verdict-badge {
+    display: block;
+    width: fit-content;
+    margin: 0.5in auto 1in auto;
+    padding: 0.15in 0.6in;
+    border: 1pt solid currentColor;
+    font-size: 16pt;
+    font-weight: bold;
+    letter-spacing: 0.08in;
+    text-align: center;
+    background: transparent;
+}
+.verdict-true { color: #0a6e0a; }
+.verdict-false { color: #b30000; }
+.verdict-misleading { color: #b8860b; }
+.verdict-unverifiable { color: #333; }
+.verdict-opinion { color: #1a5276; }
+
+    .post-quote {
+      margin: 0.3in 0.5in;
+      font-style: italic;
+      text-indent: 0;
+      border-left: 2pt solid #000;
+      padding-left: 0.2in;
+    }
+
+    .claim-block {
+      margin-bottom: 0.4in;
+      page-break-inside: avoid;
+    }
+
+    .claim-text {
+      font-weight: bold;
+      text-indent: 0;
+      margin-bottom: 0.1in;
+    }
+
+    .claim-label {
+    display: inline-block;
+    padding: 1pt 6pt;
+    font-size: 9pt;
+    font-weight: bold;
+    margin-left: 0.1in;
+    vertical-align: middle;
+    border: 0.5pt solid currentColor;
+    background: transparent;
+    letter-spacing: 0.02in;
+}
+.label-true { color: #0a6e0a; }
+.label-false { color: #b30000; }
+.label-misleading { color: #b8860b; }
+.label-unverifiable { color: #555; }
+.label-opinion { color: #1a5276; }
+
+    .claim-reasoning {
+      margin-left: 0.5in;
+      font-size: 12pt;
+      line-height: 2.0;
+      text-indent: 0;
+    }
+
+    .extended-text {
+      white-space: normal;
+      text-indent: 0;
+      margin-left: 0.5in;
+      margin-right: 0.5in;
+    }
+
+    .references {
+      page-break-before: always;
+    }
+
+    .ref-item {
+      margin-left: 0.5in;
+      text-indent: -0.5in;
+      margin-bottom: 0.15in;
+      font-size: 12pt;
+      line-height: 2.0;
+      word-wrap: break-word;
+    }
+
+    .ref-source {
+      font-weight: bold;
+    }
+
+    .disclaimer {
+      margin-top: 0.5in;
+      padding-top: 0.2in;
+      border-top: 0.5pt solid #000;
+      font-size: 10pt;
+      font-style: italic;
+      text-align: center;
+      text-indent: 0;
+    }
   </style>
 </head>
 <body>
-  <h1>Anti X-Fakes — Extended Fact-Checking Report</h1>
-  <p class="meta">Generated: {{ generated_at }} · Post ID: {{ data._post_id }} · Research time: {{ data.elapsed_seconds }} s</p>
 
-  <h2>Original post</h2>
-  <blockquote>{{ data.post.text }}<br>
-    <span class="meta">— {{ data.post.author }} (@{{ data.post.handle }}){% if data.post.date %} · {{ data.post.date }}{% endif %}</span>
-  </blockquote>
+  <h1>Evidence-Grounded Fact-Checking Report</h1>
+  
+  <div class="meta no-indent">
+    Anti X-Fakes Project<br>
+    Generated: {{ generated_at }}<br>
+    Research duration: {{ data.elapsed_seconds }} seconds
+  </div>
 
-  <h2>Verdict</h2>
-  {# Same green/red logic as the results screen, adapted for print colors #}
-  <p class="verdict {% if data.verdict in ('TRUE', 'OPINION') %}true{% elif data.verdict in ('FALSE', 'MISLEADING') %}false{% else %}other{% endif %}">{{ data.verdict }}</p>
-  <p>Confidence: {{ data.confidence }}%</p>
-  <p>{{ data.reasoning }}</p>
+  <div class="verdict-badge verdict-{{ data.verdict|lower }}">
+    {{ data.verdict }} · {{ data.confidence }}%
+  </div>
 
-  <h2>Claims analyzed</h2>
+  <h2>Original Post Under Analysis</h2>
+  <div class="post-quote no-indent">
+    "{{ data.post.text }}"
+  </div>
+  <p class="no-indent" style="text-align: right; font-size: 11pt; margin-top: 0.1in; margin-bottom: 0.4in;">
+    — {{ data.post.author }} (@{{ data.post.handle }}){% if data.post.date %}, {{ data.post.date }}{% endif %}
+  </p>
+
+  <h2>Claim-by-Claim Analysis</h2>
   {% if data.claims %}
-  <table>
-    <tr><th>Claim</th><th>Label</th><th>Conf.</th><th>Reasoning</th></tr>
-    {% for c in data.claims %}
-    <tr><td>{{ c.claim }}</td><td>{{ c.label }}</td><td>{{ c.confidence }}%</td><td>{{ c.reasoning }}</td></tr>
+    {% for claim in data.claims %}
+    <div class="claim-block">
+      <p class="claim-text no-indent">
+        Claim {{ loop.index }}: {{ claim.claim }}
+        <span class="claim-label label-{{ claim.label|lower }}">{{ claim.label }} · {{ claim.confidence }}%</span>
+      </p>
+      <p class="claim-reasoning">
+        {{ claim.reasoning }}
+      </p>
+    </div>
     {% endfor %}
-  </table>
   {% else %}
-  <p>No verifiable claims were found (opinion post).</p>
+    <p class="no-indent">No verifiable factual claims were found in this post; it contains opinions only.</p>
   {% endif %}
 
-  <h2>Extended analysis</h2>
-  {# Gemini-generated deeper write-up requested at download time (step 9) #}
-  <p class="extended">{{ extended }}</p>
+  <h2>Extended Analysis</h2>
+  <div class="extended-text">
+    {{ extended|safe }}
+  </div>
 
-  <h2>Sources cited</h2>
+  <h2 class="references">References</h2>
   {% if data.sources %}
-  <ul class="sources">
-    {% for s in data.sources %}<li>[{{ s.api }}] {{ s.title }} — {{ s.url }}</li>{% endfor %}
-  </ul>
+    {% for source in data.sources %}
+    <div class="ref-item">
+      <span class="ref-source">{{ source.api }}.</span>
+      {% if source.title %} {{ source.title }}.{% endif %}
+      Retrieved from {{ source.url }}
+    </div>
+    {% endfor %}
   {% else %}
-  <p>No external sources were retrieved.</p>
+    <p class="no-indent">No external sources were retrieved during this analysis.</p>
   {% endif %}
 
-  <p class="disclaimer">AI-assisted verdict, not absolute truth.</p>
+  <p class="disclaimer no-indent">
+    AI-assisted verdict, not absolute truth. This report was generated automatically by Anti X-Fakes 
+    using retrieval-augmented generation. Human verification is recommended for high-stakes decisions.
+  </p>
+
 </body>
 </html>
