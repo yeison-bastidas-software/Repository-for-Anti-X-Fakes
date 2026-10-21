@@ -1,22 +1,17 @@
-/* Anti X-Fakes — single stylesheet for every screen.
-
-   Palette fixed by the plan:
-     intermediate : greenish-black background (device theme-color also set)
-     main         : professional dark grey (cards/panels)
-     secondary    : dark chill blue (accents, navbar)
-     third        : cool mint blue (highlights, primary buttons)
-   Bootstrap (CDN) provides layout; this file only overrides colors/shapes. */
+/* Anti X-Fakes single stylesheet: custom dark palette (greenish black
+   background, gray panels, blue/mint accents) that complements the
+   structure provided by Bootstrap. */
 
 :root {
-  --bg: #0d1512;            /* greenish-black */
-  --panel: #23272b;         /* professional dark grey */
-  --panel-2: #2c3136;       /* slightly lighter grey for borders/dividers */
-  --accent: #1f3a5f;        /* dark chill blue */
-  --mint: #7fe3d1;          /* cool mint blue */
+  --bg: #0d1512;
+  --panel: #23272b;
+  --panel-2: #2c3136;
+  --accent: #1f3a5f;
+  --mint: #7fe3d1;
   --text: #e8ecee;
   --muted: #9aa7b0;
-  --true: #2ecc71;          /* verdict green  */
-  --false: #e74c3c;         /* verdict red    */
+  --true: #2ecc71;
+  --false: #e74c3c;
 }
 
 * { box-sizing: border-box; }
@@ -29,11 +24,11 @@ body {
   margin: 0;
 }
 
-/* --- Navigation ------------------------------------------------------- */
+/* Navbar */
 .navbar { background: var(--accent); }
 .navbar-brand { color: var(--mint) !important; font-weight: 700; letter-spacing: .5px; }
 
-/* --- Cards / panels ---------------------------------------------------- */
+/* Cards and panels */
 .card-dark {
   background: var(--panel);
   border: 1px solid var(--panel-2);
@@ -41,38 +36,35 @@ body {
   color: var(--text);
 }
 
-/* --- Buttons ------------------------------------------------------------ */
+/* Buttons and form fields */
 .btn-mint { background: var(--mint); color: #0d1512; font-weight: 600; border: none; }
 .btn-mint:hover { background: #63cdbc; color: #0d1512; }
 .btn-blue { background: var(--accent); color: var(--text); border: 1px solid #33517a; }
 .btn-blue:hover { background: #274a78; color: #fff; }
 
-/* Home form field */
 .form-control-dark { background: var(--panel-2); border: 1px solid #3a4046; color: var(--text); }
 .form-control-dark:focus {
   background: var(--panel-2); color: var(--text);
   border-color: var(--mint); box-shadow: 0 0 0 .2rem rgba(127, 227, 209, .15);
 }
 
-/* Verify button: 60% transparent until a link is entered (home.html toggles .ready) */
 #verifyBtn { opacity: .6; transition: opacity .25s ease; }
 #verifyBtn.ready { opacity: 1; }
 
-/* --- Verdict badges ------------------------------------------------------ */
+/* Verdict badges */
 .verdict-badge {
   font-size: 2rem; font-weight: 800; letter-spacing: 2px;
   text-transform: uppercase; display: block; text-align: center;
 }
-.verdict-true  { color: var(--true); }   /* TRUE / OPINION  -> green */
-.verdict-false { color: var(--false); }  /* FALSE / MISLEADING -> red */
-.verdict-other { color: var(--mint); }   /* UNVERIFIABLE -> neutral  */
+.verdict-true  { color: var(--true); }
+.verdict-false { color: var(--false); }
+.verdict-other { color: var(--mint); }
 
-/* Per-claim label badges (Bootstrap .badge needs explicit backgrounds) */
 .bg-true   { background: var(--true); }
 .bg-false  { background: var(--false); }
 .bg-accent { background: var(--accent); }
 
-/* --- Result screen -------------------------------------------------------- */
+/* Result screen */
 .result-card {
   border-radius: 1.5rem;
   min-height: 320px;
@@ -90,7 +82,7 @@ body {
 .source-item a { color: var(--mint); word-break: break-all; text-decoration: none; }
 .source-item a:hover { text-decoration: underline; }
 
-/* --- Footer disclaimer ----------------------------------------------------- */
+/* Footer disclaimer */
 .disclaimer {
   color: var(--muted); font-size: .85rem; text-align: center;
   border: 1px solid var(--panel-2); border-radius: .5rem; padding: .4rem;
@@ -98,7 +90,7 @@ body {
 }
 footer { color: var(--muted); font-size: .8rem; }
 
-/* --- Processing screen ------------------------------------------------------- */
+/* Processing screen */
 .progress { background: var(--panel-2); height: 1.4rem; border-radius: .7rem; }
 .progress-bar {
   background: linear-gradient(90deg, var(--accent), var(--mint));

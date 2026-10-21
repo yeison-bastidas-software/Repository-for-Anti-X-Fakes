@@ -1,9 +1,6 @@
-{# Home screen (plan features):
-   - program name + short description
-   - URL input with a "Paste" button next to it, enabled only when the page
-     is allowed to read the clipboard (permission granted / secure context);
-     disabled when permission is denied or the API is unavailable
-   - Verify button: 60% transparent until a link has been entered #}
+{# Home screen: title, project description and form with the post URL
+   field, a "Paste" button (Clipboard API) and a "Verify" button that
+   activates only once a link has been typed. #}
 {% extends "base.html" %}
 {% block title %}Anti X-Fakes — Verify an X post{% endblock %}
 
@@ -18,12 +15,10 @@
         and return an evidence-grounded verdict with cited sources. 
       </p>
 
-      {# Submitting here runs the full verification pipeline (POST /check). #}
       <form method="POST" action="{{ url_for('check') }}" id="checkForm">
         <div class="input-group mb-3">
           <input type="text" name="url" id="postUrl" class="form-control form-control-dark"
                  placeholder="https://x.com/user/status/1234567890" autocomplete="off" required>
-          {# Disabled by default; JS enables it only when reading the clipboard is allowed #}
           <button class="btn btn-blue" type="button" id="pasteBtn"
                   title="Paste from clipboard" disabled>Paste</button>
         </div>
@@ -38,7 +33,7 @@
 
 {% block scripts %}
 <script>
-  // Verify button opacity: 60% transparent until the field has content.
+  // Keeps the Verify button dimmed until the input field has content.
   const input = document.getElementById('postUrl');
   const verifyBtn = document.getElementById('verifyBtn');
   function refreshOpacity() {
@@ -47,11 +42,11 @@
   input.addEventListener('input', refreshOpacity);
   refreshOpacity();
 
-  // Paste button: enabled when Clipboard API exists. The browser will prompt
-  // for permission on first click; denial is handled in the catch block.
+  // Paste button: uses the browser Clipboard API; if permission is denied
+  // or the API is unavailable, the button is disabled with user feedback.
   const pasteBtn = document.getElementById('pasteBtn');
   if (navigator.clipboard && navigator.clipboard.readText) {
-    pasteBtn.disabled = false;  // enable right away, let browser prompt on click
+    pasteBtn.disabled = false;
     pasteBtn.addEventListener('click', async () => {
       try {
         const text = (await navigator.clipboard.readText()).trim();
@@ -59,12 +54,10 @@
         refreshOpacity();
         input.focus();
       } catch (err) {
-        // User denied permission or read failed: give clear feedback once.
         pasteBtn.textContent = 'Blocked';
         pasteBtn.disabled = true;
       }
     });
   }
-  // else: Clipboard API unavailable (rare) -> button stays disabled as in HTML
 </script>
 {% endblock %}
